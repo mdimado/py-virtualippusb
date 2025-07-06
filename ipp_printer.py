@@ -2,6 +2,7 @@ from USBIP import *
 
 # Interface Descriptor 1
 interface1 = InterfaceDescriptor(
+    bInterfaceNumber=0,
     bAlternateSetting=0,
     bNumEndpoints=2,
     bInterfaceClass=0x07,     # Printer class
@@ -10,8 +11,9 @@ interface1 = InterfaceDescriptor(
     iInterface=0
 )
 
-# Interface Descriptor 2 (identical copy for ipp-usb requirement)
+# Interface Descriptor 2
 interface2 = InterfaceDescriptor(
+    bInterfaceNumber=1,
     bAlternateSetting=0,
     bNumEndpoints=2,
     bInterfaceClass=0x07,
@@ -20,26 +22,41 @@ interface2 = InterfaceDescriptor(
     iInterface=1
 )
 
-# Endpoints
-bulk_out = EndPoint(
+# Endpoints for interface 1
+bulk_out_1 = EndPoint(
     bEndpointAddress=0x01,  # OUT
-    bmAttributes=0x02,
+    bmAttributes=0x02,      # Bulk
     wMaxPacketSize=0x0040,
     bInterval=0x00
 )
 
-bulk_in = EndPoint(
+bulk_in_1 = EndPoint(
     bEndpointAddress=0x81,  # IN
-    bmAttributes=0x02,
+    bmAttributes=0x02,      # Bulk
+    wMaxPacketSize=0x0040,
+    bInterval=0x00
+)
+
+# Endpoints for interface 2
+bulk_out_2 = EndPoint(
+    bEndpointAddress=0x02,  # OUT
+    bmAttributes=0x02,      # Bulk
+    wMaxPacketSize=0x0040,
+    bInterval=0x00
+)
+
+bulk_in_2 = EndPoint(
+    bEndpointAddress=0x82,  # IN
+    bmAttributes=0x02,      # Bulk
     wMaxPacketSize=0x0040,
     bInterval=0x00
 )
 
 # Bind endpoints to interfaces
-interface1.descriptions = [interface1]
-interface2.descriptions = [interface2]
-interface1.endpoints = [bulk_out, bulk_in]
-interface2.endpoints = [bulk_out, bulk_in]
+interface1.descriptions = []  # Empty - no additional descriptors
+interface2.descriptions = []  # Empty - no additional descriptors
+interface1.endpoints = [bulk_out_1, bulk_in_1]
+interface2.endpoints = [bulk_out_2, bulk_in_2]
 
 # Device Configuration
 configuration = DeviceConfigurations(
@@ -55,8 +72,8 @@ configuration.interfaces = [interface1, interface2]
 
 # Virtual IPP-over-USB printer device
 class USBIPPPrinter(USBDevice):
-    vendorID = 0x1234         # Dummy vendor ID (use 0x03F0 for HP)
-    productID = 0x5678
+    vendorID = 0x03F0         # HP vendor ID
+    productID = 0x1234        # Dummy product ID
     bcdDevice = 0x0100
     bDeviceClass = 0x00       # Interface-specified
     bDeviceSubClass = 0x00
@@ -72,7 +89,10 @@ class USBIPPPrinter(USBDevice):
 
     def handle_data(self, usb_req):
         print(f"[USBIPPPrinter] Received data on endpoint {usb_req.ep}")
-
+        
+        if hasattr(usb_req, 'data') and usb_req.data:
+            print(f"[USBIPPPrinter] Data received: {usb_req.data[:100]}...")  # Print first 100 bytes
+        
         # Basic IPP-over-USB HTTP response (200 OK, empty body)
         response = (
             b"HTTP/1.1 200 OK\r\n"
@@ -82,3 +102,9 @@ class USBIPPPrinter(USBDevice):
         )
 
         self.send_usb_req(usb_req, response, len(response))
+
+    def handle_unknown_control(self, control_req, usb_req):
+        """Handle unknown control requests"""
+        print(f"[USBIPPPrinter] Unknown control request: {control_req.bmRequestType:02x} {control_req.bRequest:02x}")
+        # Send empty response with status 0 (success)
+        self.send_usb_req(usb_req, b'', 0, 0)
