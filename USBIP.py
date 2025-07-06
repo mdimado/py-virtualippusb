@@ -365,8 +365,8 @@ class USBContainer:
 
     def handle_attach(self):
         return OPREPImport(base=USBIPHeader(command=3, status=0),
-                           usbPath='/sys/devices/pci0000:00/0000:00:01.2/usb1/1-1',
-                           busID='1-1',
+                           usbPath=b'/sys/devices/pci0000:00/0000:00:01.2/usb1/1-1',
+                           busID=b'1-1',
                            busnum=1,
                            devnum=2,
                            speed=2,
@@ -384,8 +384,8 @@ class USBContainer:
         usb_dev = self.usb_devices[0]
         return OPREPDevList(base=USBIPHeader(command=5,status=0),
                             nExportedDevice=1,
-                            usbPath='/sys/devices/pci0000:00/0000:00:01.2/usb1/1-1',
-                            busID='1-1',
+                            usbPath=b'/sys/devices/pci0000:00/0000:00:01.2/usb1/1-1',
+                            busID=b'1-1',
                             busnum=1,
                             devnum=2,
                             speed=2,
@@ -426,14 +426,15 @@ class USBContainer:
                         conn.sendall(self.handle_device_list().pack())
                     elif req.command == 0x8003:
                         print('attach device')
-                        conn.recv(32)  # receive bus id
+                        _ = recv_exact(conn, 32) # receive bus id
                         conn.sendall(self.handle_attach().pack())
                         attached = True
                 else:
                     print('----------------') 
                     print('handles requests')
                     cmd = USBIPCMDSubmit()
-                    data = conn.recv(cmd.size())
+                    # data = conn.recv(cmd.size())
+                    data = recv_exact(conn, cmd.size())
                     cmd.unpack(data)
                     print("usbip cmd: {}".format(hex(cmd.command)))
                     print("usbip seqnum: {}".format(hex(cmd.seqnum)))
@@ -459,3 +460,11 @@ class USBContainer:
                     self.usb_devices[0].handle_usb_request(usb_req)
             conn.close()
 
+def recv_exact(conn, size):
+    buf = b''
+    while len(buf) < size:
+        chunk = conn.recv(size - len(buf))
+        if not chunk:
+            raise ConnectionError("Connection closed before receiving full buffer")
+        buf += chunk
+    return buf
