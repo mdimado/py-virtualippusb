@@ -1,9 +1,13 @@
 import socket
 import struct
-import types
-import time
+from abc import ABC, abstractmethod
 
-class BaseStucture:
+
+USBIP_DIR_OUT = 0
+USBIP_DIR_IN = 1
+
+
+class BaseStructure(ABC):
     def __init__(self, **kwargs):
         self.init_from_dict(**kwargs)
         for field in self._fields_:
@@ -19,73 +23,51 @@ class BaseStucture:
         return struct.calcsize(self.format())
 
     def format(self):
-        pack_format = '>'
+        pack_format = self._byte_order_
         for field in self._fields_:
-            if hasattr(field[1], '__class__') and hasattr(field[1], '__bases__'):
-                if BaseStucture in field[1].__class__.__bases__:
-                    pack_format += str(field[1].size()) + 's'
-            elif isinstance(field[1], str):
-                if 'si' == field[1]:
-                    pack_format += 'c'
-                elif '<' in field[1]:
-                    pack_format += field[1][1:]
-                else:
-                    pack_format += field[1]
+            if isinstance(field[1], BaseStructure):
+                pack_format += str(field[1].size()) + 's'
             else:
-                # Handle non-string field types (like nested objects)
-                if hasattr(field[1], 'size'):
-                    pack_format += str(field[1].size()) + 's'
+                pack_format += field[1]
         return pack_format
 
     def pack(self):
         values = []
         for field in self._fields_:
-            if hasattr(field[1], '__class__') and hasattr(field[1], '__bases__'):
-                if BaseStucture in field[1].__class__.__bases__:
-                     values.append(getattr(self, field[0], 0).pack())
-            elif isinstance(field[1], str):
-                if 'si' == field[1]:
-                    values.append(bytes([getattr(self, field[0], 0)]))
-                else:
-                    values.append(getattr(self, field[0], 0))
+            if isinstance(field[1], BaseStructure):
+                values.append(getattr(self, field[0], 0).pack())
             else:
-                # Handle non-string field types (like nested objects)
-                if hasattr(field[1], 'pack'):
-                    values.append(getattr(self, field[0], field[1]).pack())
-                else:
-                    values.append(getattr(self, field[0], 0))
+                values.append(getattr(self, field[0], 0))
         return struct.pack(self.format(), *values)
 
     def unpack(self, buf):
         values = struct.unpack(self.format(), buf)
-        i = 0
         keys_vals = {}
-        for val in values:
-            if isinstance(self._fields_[i][1], str) and '<' in self._fields_[i][1] and len(self._fields_[i][1]) > 1:
-                val = struct.unpack('<' + self._fields_[i][1][1], struct.pack('>' + self._fields_[i][1][1], val))[0]
+        for i, val in enumerate(values):
             keys_vals[self._fields_[i][0]] = val
-            i += 1
 
         self.init_from_dict(**keys_vals)
 
+    @property
+    @abstractmethod
+    def _byte_order_(self): pass
 
-def int_to_hex_string(val):
-    sval = format(val, 'x')
-    if len(sval) < 16:
-        for i in range(len(sval), 16):
-            sval = '0' + sval
-    return bytes.fromhex(sval)
+    @property
+    @abstractmethod
+    def _fields_(self): pass
 
 
-class USBIPHeader(BaseStucture):
+class USBIPHeader(BaseStructure):
+    _byte_order_ = '>'  # USBIP uses big-endian
     _fields_ = [
-        ('version', 'H', 0x0111),  # Version 1.1.1
+        ('version', 'H', 0x0111),  # USB/IP version 1.1.1
         ('command', 'H'),
         ('status', 'I')
     ]
 
 
-class USBInterface(BaseStucture):
+class USBInterface(BaseStructure):
+    _byte_order_ = '>'
     _fields_ = [
         ('bInterfaceClass', 'B'),
         ('bInterfaceSubClass', 'B'),
@@ -94,7 +76,8 @@ class USBInterface(BaseStucture):
     ]
 
 
-class OPREPDevList(BaseStucture):
+class OP_REP_DevList(BaseStructure):
+    _byte_order_ = '>'
     _fields_ = [
         ('base', USBIPHeader()),
         ('nExportedDevice', 'I'),
@@ -111,23 +94,13 @@ class OPREPDevList(BaseStucture):
         ('bDeviceProtocol', 'B'),
         ('bConfigurationValue', 'B'),
         ('bNumConfigurations', 'B'),
-        ('bNumInterfaces', 'B')
+        ('bNumInterfaces', 'B'),
+        ('interfaces', USBInterface())
     ]
 
-    def pack(self):
-        """Custom pack method to handle multiple interfaces"""
-        # Pack the base structure first
-        base_packed = BaseStucture.pack(self)
-        
-        # Add interface data for each interface
-        if hasattr(self, 'interfaces') and self.interfaces:
-            for interface in self.interfaces:
-                base_packed += interface.pack()
-        
-        return base_packed
 
-
-class OPREPImport(BaseStucture):
+class OP_REP_Import(BaseStructure):
+    _byte_order_ = '>'
     _fields_ = [
         ('base', USBIPHeader()),
         ('usbPath', '256s'),
@@ -147,124 +120,139 @@ class OPREPImport(BaseStucture):
     ]
 
 
-class USBIPRETSubmit(BaseStucture):
+class USBIP_RET_Submit(BaseStructure):
+    _byte_order_ = '>'
     _fields_ = [
         ('command', 'I'),
         ('seqnum', 'I'),
-        ('devid', 'I'),
-        ('direction', 'I'),
-        ('ep', 'I'),
+        ('devid', 'I', 0),
+        ('direction', 'I', 0),
+        ('ep', 'I', 0),
         ('status', 'I'),
         ('actual_length', 'I'),
-        ('start_frame', 'I'),
-        ('number_of_packets', 'I'),
+        ('start_frame', 'I', 0),
+        ('number_of_packets', 'I', 0xffffffff),
         ('error_count', 'I'),
-        ('setup', 'Q')
+        ('padding', 'Q', 0)
     ]
 
     def pack(self):
-        packed_data = BaseStucture.pack(self)
-        if hasattr(self, 'data'):
-            packed_data += self.data
+        packed_data = BaseStructure.pack(self)
+        packed_data += self.data
         return packed_data
 
 
-class USBIPCMDSubmit(BaseStucture):
+class USBIP_CMD_Submit(BaseStructure):
+    _byte_order_ = '>'
     _fields_ = [
         ('command', 'I'),
         ('seqnum', 'I'),
         ('devid', 'I'),
         ('direction', 'I'),
-        ('ep', 'I'),
+        ('ep', 'I'),  # endpoint
         ('transfer_flags', 'I'),
         ('transfer_buffer_length', 'I'),
         ('start_frame', 'I'),
         ('number_of_packets', 'I'),
         ('interval', 'I'),
-        ('setup', 'Q')
+        ('setup', '8s')
     ]
 
 
-class USBIPUnlinkReq(BaseStucture):
-    _fields_ = [
-        ('command', 'I', 0x2),
-        ('seqnum', 'I'),
-        ('devid', 'I', 0x2),
-        ('direction', 'I'),
-        ('ep', 'I'),
-        ('transfer_flags', 'I'),
-        ('transfer_buffer_length', 'I'),
-        ('start_frame', 'I'),
-        ('number_of_packets', 'I'),
-        ('interval', 'I'),
-        ('setup', 'Q')
-    ]
-
-
-class StandardDeviceRequest(BaseStucture):
+class StandardDeviceRequest(BaseStructure):
+    _byte_order_ = '<'  # USB uses little-endian
     _fields_ = [
         ('bmRequestType', 'B'),
         ('bRequest', 'B'),
         ('wValue', 'H'),
         ('wIndex', 'H'),
-        ('wLength', '<H')
+        ('wLength', 'H')
     ]
 
 
-class DeviceDescriptor(BaseStucture):
+class DeviceDescriptor(BaseStructure):
+    _byte_order_ = '<'
     _fields_ = [
         ('bLength', 'B', 18),
         ('bDescriptorType', 'B', 1),
-        ('bcdUSB', 'H', 0x0200),  # USB 2.0
+        ('bcdUSB', 'H', 0x0110),
         ('bDeviceClass', 'B'),
         ('bDeviceSubClass', 'B'),
         ('bDeviceProtocol', 'B'),
-        ('bMaxPacketSize0', 'B', 64),
+        ('bMaxPacketSize0', 'B'),
         ('idVendor', 'H'),
         ('idProduct', 'H'),
         ('bcdDevice', 'H'),
-        ('iManufacturer', 'B'),
-        ('iProduct', 'B'),
-        ('iSerialNumber', 'B'),
+        ('iManufacturer', 'B', 0),
+        ('iProduct', 'B', 0),
+        ('iSerialNumber', 'B', 0),
         ('bNumConfigurations', 'B')
     ]
 
 
-class DeviceConfigurations(BaseStucture):
+class DeviceConfiguration(BaseStructure):
+    _byte_order_ = '<'
     _fields_ = [
         ('bLength', 'B', 9),
         ('bDescriptorType', 'B', 2),
-        ('wTotalLength', 'H', 0x2200),
-        ('bNumInterfaces', 'B', 1),
+        ('wTotalLength', 'H'),
+        ('bNumInterfaces', 'B'),
         ('bConfigurationValue', 'B', 1),
         ('iConfiguration', 'B', 0),
         ('bmAttributes', 'B', 0x80),
-        ('bMaxPower', 'B', 0x32)
+        ('bMaxPower', 'B')
     ]
 
 
-class InterfaceDescriptor(BaseStucture):
+class BOSDescriptor(BaseStructure):
+    _byte_order_ = '<'
+    _fields_ = [
+        ('bLength', 'B', 0x05),
+        ('bDescriptorType', 'B', 0x0F),  # Binary Device Object Store (BOS) Descriptor
+        ('wTotalLength', 'H'),
+        ('bNumDeviceCaps', 'B'),
+    ]
+
+
+class DeviceQualifierDescriptor(BaseStructure):
+    _byte_order_ = '<'
+    _fields_ = [
+        ('bLength', 'B', 0x0a),
+        ('bDescriptorType', 'B', 0x06),  # Device Qualifier Descriptor
+        ('bcdUSB', 'H'),
+        ('bDeviceClass', 'B'),
+        ('bDeviceSubClass', 'B'),
+        ('bDeviceProtocol', 'B'),
+        ('bMaxPacketSize0', 'B'),
+        ('bNumConfigurations', 'B'),
+        ('bReserved', 'B', 0),
+    ]
+
+
+class InterfaceDescriptor(BaseStructure):
+    _byte_order_ = '<'
     _fields_ = [
         ('bLength', 'B', 9),
         ('bDescriptorType', 'B', 4),
         ('bInterfaceNumber', 'B', 0),
         ('bAlternateSetting', 'B', 0),
         ('bNumEndpoints', 'B', 1),
-        ('bInterfaceClass', 'B', 3),
-        ('bInterfaceSubClass', 'B', 1),
-        ('bInterfaceProtocol', 'B', 2),
+        ('bInterfaceClass', 'B'),
+        ('bInterfaceSubClass', 'B'),
+        ('bInterfaceProtocol', 'B'),
         ('iInterface', 'B', 0)
     ]
 
 
-class EndPoint(BaseStucture):
+class EndpointDescriptor(BaseStructure):
+    _byte_order_ = '<'
     _fields_ = [
         ('bLength', 'B', 7),
         ('bDescriptorType', 'B', 0x5),
-        ('bEndpointAddress', 'B', 0x81),
-        ('bmAttributes', 'B', 0x3),
-        ('wMaxPacketSize', 'H', 0x0040),  # 64 bytes
-        ('bInterval', 'B', 0x0A)
+        ('bEndpointAddress', 'B'),
+        ('bmAttributes', 'B'),
+        ('wMaxPacketSize', 'H'),
+        ('bInterval', 'B')
     ]
 
 
@@ -274,317 +262,218 @@ class USBRequest():
             setattr(self, key, value)
 
 
-class USBDevice():
+class USBDevice(ABC):
+    '''
+    Abstract Base Class
+    '''
+
+    @property
+    @abstractmethod
+    def configurations(self): pass
+
+    @property
+    @abstractmethod
+    def device_descriptor(self): pass
+
     def __init__(self):
         self.generate_raw_configuration()
 
     def generate_raw_configuration(self):
-        config_str = self.configurations[0].pack()
-        
-        # Handle multiple interfaces properly
-        for interface in self.configurations[0].interfaces:
-            config_str += interface.pack()
-            
-            # Add interface descriptors
-            for desc in interface.descriptions:
-                config_str += desc.pack()
-            
-            # Add endpoint descriptors
-            for endpoint in interface.endpoints:
-                config_str += endpoint.pack()
-        
-        self.all_configurations = config_str
+        all_configurations = bytearray()
+        for configuration in self.configurations:
+            all_configurations.extend(configuration.pack())
+            for interface in configuration.interfaces:
+                for interface_alternative in interface:
+                    all_configurations.extend(interface_alternative.pack())
+                    if hasattr(interface_alternative, 'class_descriptor'):
+                        all_configurations.extend(interface_alternative.class_descriptor.pack())
+                    for endpoint in interface_alternative.endpoints:
+                        all_configurations.extend(endpoint.pack())
+                        if hasattr(endpoint, 'class_descriptor'):
+                            all_configurations.extend(endpoint.class_descriptor.pack())
+        self.all_configurations = all_configurations
 
-    def send_usb_req(self, usb_req, usb_res, usb_len, status=0):
-        response = USBIPRETSubmit(command=0x3,
-                                  seqnum=usb_req.seqnum,
-                                  devid=0,  # Server should set this to 0
-                                  direction=0,  # Server should set this to 0
-                                  ep=0,
-                                  status=status,
-                                  actual_length=usb_len,
-                                  start_frame=0x0,
-                                  number_of_packets=0xffffffff,
-                                  error_count=0,
-                                  setup=0,
-                                  data=usb_res)
-        try:
-            self.connection.sendall(response.pack())
-            print(f"[USB] Sent response: {len(response.pack())} bytes, status={status}")
-        except Exception as e:
-            print(f"[USB] Error sending response: {e}")
+    def send_usb_ret(self, usb_req, usb_res, usb_len, status=0):
+        print(f'Sending {bytes_to_string(usb_res)}')
+        self.connection.sendall(USBIP_RET_Submit(command=0x3,
+                                                 seqnum=usb_req.seqnum,
+                                                 status=status,
+                                                 actual_length=usb_len,
+                                                 data=usb_res).pack())
 
     def handle_get_descriptor(self, control_req, usb_req):
         handled = False
-        print("handle_get_descriptor {}".format(control_req.wValue))
-        if control_req.wValue == 0x0100:  # Device descriptor
+        descriptor_type, descriptor_index = control_req.wValue.to_bytes(length=2, byteorder='big')
+        print(f"handle_get_descriptor {descriptor_type:n} {descriptor_index:n}")
+        if descriptor_type == 0x01:  # Device Descriptor
             handled = True
-            ret = DeviceDescriptor(bDeviceClass=self.bDeviceClass,
-                                   bDeviceSubClass=self.bDeviceSubClass,
-                                   bDeviceProtocol=self.bDeviceProtocol,
-                                   bMaxPacketSize0=64,
-                                   idVendor=self.vendorID,
-                                   idProduct=self.productID,
-                                   bcdDevice=self.bcdDevice,
-                                   iManufacturer=0,
-                                   iProduct=0,
-                                   iSerialNumber=0,
-                                   bNumConfigurations=self.bNumConfigurations).pack()
-            self.send_usb_req(usb_req, ret, len(ret))
-        elif control_req.wValue == 0x0200:  # Configuration descriptor
+            ret = self.device_descriptor.pack()
+            self.send_usb_ret(usb_req, ret, len(ret))
+        elif descriptor_type == 0x02:  # Configuration Descriptor
             handled = True
             ret = self.all_configurations[:control_req.wLength]
-            self.send_usb_req(usb_req, ret, len(ret))
-        elif control_req.wValue == 0x0300:  # String descriptor
-            handled = True
-            # Send empty string descriptor
-            ret = b'\x04\x03\x09\x04'  # English (US) language descriptor
-            self.send_usb_req(usb_req, ret, len(ret))
-        else:
-            print(f"Unknown descriptor type: {control_req.wValue:04x}")
+            self.send_usb_ret(usb_req, ret, len(ret))
 
         return handled
 
     def handle_set_configuration(self, control_req, usb_req):
-        handled = False
-        print("handle_set_configuration {}".format(control_req.wValue))
-        handled = True
-        self.send_usb_req(usb_req, b'', 0, 0)
-        return handled
+        # Only supports 1 configuration
+        print(f"handle_set_configuration {control_req.wValue:n}")
+        self.send_usb_ret(usb_req, b'', 0)
+        return True
 
     def handle_usb_control(self, usb_req):
         control_req = StandardDeviceRequest()
-        control_req.unpack(int_to_hex_string(usb_req.setup))
+        control_req.unpack(usb_req.setup)
         handled = False
-        print("  UC Request Type {}".format(control_req.bmRequestType))
-        print("  UC Request {}".format(control_req.bRequest))
-        print("  UC Value  {}".format(control_req.wValue))
-        print("  UCIndex  {}".format(control_req.wIndex))
-        print("  UC Length {}".format(control_req.wLength))
-        
-        if control_req.bmRequestType == 0x80:  # Host Request
-            if control_req.bRequest == 0x06:  # Get Descriptor
-                handled = self.handle_get_descriptor(control_req, usb_req)
-            elif control_req.bRequest == 0x00:  # Get STATUS
-                self.send_usb_req(usb_req, b"\x01\x00", 2)
+        print(f"  UC Request Type {control_req.bmRequestType}")
+        print(f"  UC Request {control_req.bRequest}")
+        print(f"  UC Value  {control_req.wValue}")
+        print(f"  UC Index  {control_req.wIndex}")
+        print(f"  UC Length {control_req.wLength}")
+        if control_req.bmRequestType == 0x80:  # Data flows IN, from Device to Host
+            if control_req.bRequest == 0x00:  # GET_STATUS
+                attributes = self.configurations[0].bmAttributes
+                is_self_powered = attributes & (1 << 6)
+                is_remote_wakeup = attributes & (1 << 5)
+                ret = 0x0000 | (is_remote_wakeup << 1) | (is_self_powered)
+                self.send_usb_ret(usb_req, ret, 2)
                 handled = True
 
-        elif control_req.bmRequestType == 0x00:  # Host Request
+            elif control_req.bRequest == 0x06:  # GET_DESCRIPTOR
+                handled = self.handle_get_descriptor(control_req, usb_req)
+
+        elif control_req.bmRequestType == 0x00:  # Data flows OUT, from Host to Device
             if control_req.bRequest == 0x09:  # Set Configuration
                 handled = self.handle_set_configuration(control_req, usb_req)
 
         if not handled:
-            print(f"Unhandled control request: {control_req.bmRequestType:02x} {control_req.bRequest:02x}")
-            self.send_usb_req(usb_req, b'', 0, 0)  # Send empty response
+            self.handle_device_specific_control(control_req, usb_req)
 
     def handle_usb_request(self, usb_req):
-        if usb_req.ep == 0:
+        if usb_req.ep == 0:  # Endpoint 0 is always the control endpoint
             self.handle_usb_control(usb_req)
         else:
             self.handle_data(usb_req)
 
+    @abstractmethod
     def handle_data(self, usb_req):
-        """Override this method in subclasses"""
-        print(f"[USB] Default data handler for endpoint {usb_req.ep}")
-        self.send_usb_req(usb_req, b'', 0, 0)
+        pass
+
+    @abstractmethod
+    def handle_device_specific_control(self, usb_req):
+        pass
+
+
+def bytes_to_string(bytes):
+    if bytes:
+        return ''.join(["\\x{0:02x}".format(val) for val in bytes])
+    return None
 
 
 class USBContainer:
-    def __init__(self):
-        self.usb_devices = []
+    usb_devices = []
 
     def add_usb_device(self, usb_device):
         self.usb_devices.append(usb_device)
 
     def handle_attach(self):
-        device = self.usb_devices[0]
-        return OPREPImport(base=USBIPHeader(command=3, status=0),
-                           usbPath=b'/sys/devices/pci0000:00/0000:00:01.2/usb1/1-1'.ljust(256, b'\x00'),
-                           busID=b'1-1'.ljust(32, b'\x00'),
-                           busnum=1,
-                           devnum=2,
-                           speed=2,  # High speed
-                           idVendor=device.vendorID,
-                           idProduct=device.productID,
-                           bcdDevice=device.bcdDevice,
-                           bDeviceClass=device.bDeviceClass,
-                           bDeviceSubClass=device.bDeviceSubClass,
-                           bDeviceProtocol=device.bDeviceProtocol,
-                           bNumConfigurations=device.bNumConfigurations,
-                           bConfigurationValue=device.bConfigurationValue,
-                           bNumInterfaces=device.bNumInterfaces)
+        usb_dev = self.usb_devices[0]
+        device_descriptor = usb_dev.device_descriptor
+        return OP_REP_Import(base=USBIPHeader(command=3, status=0),
+                             usbPath='/sys/devices/pci0000:00/0000:00:01.2/usb1/1-1'.encode('ascii'),
+                             busID='1-1'.encode('ascii'),
+                             busnum=1,
+                             devnum=2,
+                             speed=2,
+                             idVendor=device_descriptor.idVendor,
+                             idProduct=device_descriptor.idProduct,
+                             bcdDevice=device_descriptor.bcdDevice,
+                             bDeviceClass=device_descriptor.bDeviceClass,
+                             bDeviceSubClass=device_descriptor.bDeviceSubClass,
+                             bDeviceProtocol=device_descriptor.bDeviceProtocol,
+                             bConfigurationValue=usb_dev.configurations[0].bConfigurationValue,
+                             bNumConfigurations=device_descriptor.bNumConfigurations,
+                             bNumInterfaces=usb_dev.configurations[0].bNumInterfaces)
 
     def handle_device_list(self):
         usb_dev = self.usb_devices[0]
-        
-        # Create interface list for all interfaces
-        interface_list = []
-        for interface in usb_dev.configurations[0].interfaces:
-            interface_list.append(USBInterface(
-                bInterfaceClass=interface.bInterfaceClass,
-                bInterfaceSubClass=interface.bInterfaceSubClass,
-                bInterfaceProtocol=interface.bInterfaceProtocol
-            ))
-        
-        response = OPREPDevList(base=USBIPHeader(command=5, status=0),
-                               nExportedDevice=1,
-                               usbPath=b'/sys/devices/pci0000:00/0000:00:01.2/usb1/1-1'.ljust(256, b'\x00'),
-                               busID=b'1-1'.ljust(32, b'\x00'),
-                               busnum=1,
-                               devnum=2,
-                               speed=2,
-                               idVendor=usb_dev.vendorID,
-                               idProduct=usb_dev.productID,
-                               bcdDevice=usb_dev.bcdDevice,
-                               bDeviceClass=usb_dev.bDeviceClass,
-                               bDeviceSubClass=usb_dev.bDeviceSubClass,
-                               bDeviceProtocol=usb_dev.bDeviceProtocol,
-                               bNumConfigurations=usb_dev.bNumConfigurations,
-                               bConfigurationValue=usb_dev.bConfigurationValue,
-                               bNumInterfaces=usb_dev.bNumInterfaces)
-        
-        # Add the interface list to the response
-        response.interfaces = interface_list
-        
-        return response
-
-    def safe_recv(self, conn, size, timeout=5.0):
-        """Safely receive data with timeout and proper error handling"""
-        conn.settimeout(timeout)
-        data = b''
-        try:
-            while len(data) < size:
-                chunk = conn.recv(size - len(data))
-                if not chunk:
-                    print(f"[Server] Connection closed while receiving data (got {len(data)}/{size} bytes)")
-                    return None
-                data += chunk
-                print(f"[Server] Received {len(chunk)} bytes ({len(data)}/{size} total)")
-        except socket.timeout:
-            print(f"[Server] Timeout while receiving data (got {len(data)}/{size} bytes)")
-            return None
-        except Exception as e:
-            print(f"[Server] Error receiving data: {e}")
-            return None
-        finally:
-            conn.settimeout(None)
-        return data
+        device_descriptor = usb_dev.device_descriptor
+        return OP_REP_DevList(base=USBIPHeader(command=5, status=0),
+                              nExportedDevice=1,
+                              usbPath='/sys/devices/pci0000:00/0000:00:01.2/usb1/1-1'.encode('ascii'),
+                              busID='1-1'.encode('ascii'),
+                              busnum=1,
+                              devnum=2,
+                              speed=2,
+                              idVendor=device_descriptor.idVendor,
+                              idProduct=device_descriptor.idProduct,
+                              bcdDevice=device_descriptor.bcdDevice,
+                              bDeviceClass=device_descriptor.bDeviceClass,
+                              bDeviceSubClass=device_descriptor.bDeviceSubClass,
+                              bDeviceProtocol=device_descriptor.bDeviceProtocol,
+                              bConfigurationValue=usb_dev.configurations[0].bConfigurationValue,
+                              bNumConfigurations=device_descriptor.bNumConfigurations,
+                              bNumInterfaces=usb_dev.configurations[0].bNumInterfaces,
+                              interfaces=USBInterface(bInterfaceClass=usb_dev.configurations[0].interfaces[0][0].bInterfaceClass,
+                                                      bInterfaceSubClass=usb_dev.configurations[0].interfaces[0][0].bInterfaceSubClass,
+                                                      bInterfaceProtocol=usb_dev.configurations[0].interfaces[0][0].bInterfaceProtocol))
 
     def run(self, ip='0.0.0.0', port=3240):
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         s.bind((ip, port))
-        s.listen(5)
-        print(f"[Server] Listening on {ip}:{port}")
-        
-        while True:
+        s.listen()
+        attached = False
+        req = USBIPHeader()
+        while 1:
             conn, addr = s.accept()
-            print(f'[Server] Connection from: {addr}')
-            
-            attached = False
-            req = USBIPHeader()
-            
-            try:
-                while True:
-                    if not attached:
-                        # Handle initial protocol messages
-                        print("[Server] Waiting for initial protocol message...")
-                        data = self.safe_recv(conn, 8, timeout=10.0)
-                        if data is None:
-                            print("[Server] Failed to receive initial header")
-                            break
-                            
-                        req.unpack(data)
-                        print(f'[Server] Header command: {hex(req.command)}, version: {hex(req.version)}, status: {hex(req.status)}')
-                        
-                        if req.command == 0x8005:  # OP_REQ_DEVLIST
-                            print('[Server] Sending device list')
-                            response = self.handle_device_list()
-                            conn.sendall(response.pack())
-                            print(f'[Server] Sent device list response ({len(response.pack())} bytes)')
-                            
-                        elif req.command == 0x8003:  # OP_REQ_IMPORT
-                            print('[Server] Handling device attach')
-                            busid_data = self.safe_recv(conn, 32, timeout=5.0)
-                            if busid_data is None:
-                                print("[Server] Failed to receive bus ID")
-                                break
-                            
-                            busid = busid_data.rstrip(b'\x00')
-                            print(f'[Server] Bus ID: {busid}')
-                            
-                            response = self.handle_attach()
-                            conn.sendall(response.pack())
-                            print(f'[Server] Sent attach response ({len(response.pack())} bytes)')
-                            print('[Server] Device attached, switching to USB mode')
-                            attached = True
-                            
-                        else:
-                            print(f'[Server] Unknown command: {hex(req.command)}')
-                            break
-                            
-                    else:
-                        # Handle USB requests
-                        print('[Server] ================')
-                        print('[Server] Waiting for USB request...')
-                        
-                        # Read the command header
-                        cmd = USBIPCMDSubmit()
-                        expected_size = cmd.size()
-                        print(f"[Server] Expecting {expected_size} bytes for USB command")
-                        
-                        data = self.safe_recv(conn, expected_size, timeout=30.0)
-                        if data is None:
-                            print("[Server] Failed to receive USB command header")
-                            break
-                        
-                        try:
-                            cmd.unpack(data)
-                            print(f"[Server] USB command: {hex(cmd.command)}")
-                            print(f"[Server] seqnum: {hex(cmd.seqnum)}")
-                            print(f"[Server] devid: {hex(cmd.devid)}")
-                            print(f"[Server] direction: {hex(cmd.direction)}")
-                            print(f"[Server] ep: {hex(cmd.ep)}")
-                            print(f"[Server] flags: {hex(cmd.transfer_flags)}")
-                            print(f"[Server] buffer_length: {cmd.transfer_buffer_length}")
-                            
-                            # Handle additional data if any
-                            additional_data = b''
-                            if cmd.transfer_buffer_length > 0:
-                                print(f"[Server] Expecting {cmd.transfer_buffer_length} bytes of additional data")
-                                additional_data = self.safe_recv(conn, cmd.transfer_buffer_length, timeout=10.0)
-                                if additional_data is None:
-                                    print("[Server] Failed to receive additional data")
-                                    break
-                                print(f"[Server] Additional data: {len(additional_data)} bytes")
-                                if len(additional_data) > 0:
-                                    print(f"[Server] Data preview: {additional_data[:min(64, len(additional_data))]}")
-                            
-                            # Create USB request
-                            usb_req = USBRequest(seqnum=cmd.seqnum,
-                                                 devid=cmd.devid,
-                                                 direction=cmd.direction,
-                                                 ep=cmd.ep,
-                                                 flags=cmd.transfer_flags,
-                                                 numberOfPackets=cmd.number_of_packets,
-                                                 interval=cmd.interval,
-                                                 setup=cmd.setup,
-                                                 data=additional_data)
-                            
-                            # Handle the request
-                            self.usb_devices[0].connection = conn
-                            self.usb_devices[0].handle_usb_request(usb_req)
-                            
-                        except Exception as e:
-                            print(f"[Server] Error processing USB command: {e}")
-                            import traceback
-                            traceback.print_exc()
-                            break
-                        
-            except Exception as e:
-                print(f"[Server] Error handling connection: {e}")
-                import traceback
-                traceback.print_exc()
-            finally:
-                print(f"[Server] Closing connection: {addr}")
-                conn.close()
+            print('Connection address:', addr)
+            while 1:
+                if not attached:
+                    data = conn.recv(8)
+                    if not data:
+                        break
+                    req.unpack(data)
+                    print('Header Packet')
+                    print('command:', hex(req.command))
+                    if req.command == 0x8005:  # OP_REQ_DEVLIST
+                        print('list of devices')
+                        conn.sendall(self.handle_device_list().pack())
+                    elif req.command == 0x8003:  # OP_REQ_IMPORT
+                        print('attach device')
+                        conn.recv(32)  # receive bus id
+                        conn.sendall(self.handle_attach().pack())
+                        attached = True
+                else:
+                    print('----------------')
+                    print('handles requests')
+                    cmd = USBIP_CMD_Submit()
+                    cmd_header_data = conn.recv(cmd.size())
+                    cmd.unpack(cmd_header_data)
+                    transfer_buffer = conn.recv(cmd.transfer_buffer_length) if cmd.direction == USBIP_DIR_OUT else None
+                    print(f"usbip cmd {cmd.command:x}")
+                    print(f"usbip seqnum {cmd.seqnum:x}")
+                    print(f"usbip devid {cmd.devid:x}")
+                    print(f"usbip direction {cmd.direction:x}")
+                    print(f"usbip ep {cmd.ep:x}")
+                    print(f"usbip flags {cmd.transfer_flags:x}")
+                    print(f"usbip transfer buffer length {cmd.transfer_buffer_length:x}")
+                    print(f"usbip start {cmd.start_frame:x}")
+                    print(f"usbip number of packets {cmd.number_of_packets:x}")
+                    print(f"usbip interval {cmd.interval:x}")
+                    print(f"usbip setup {bytes_to_string(cmd.setup)}")
+                    print(f"usbip transfer buffer {bytes_to_string(transfer_buffer)}")
+                    usb_req = USBRequest(seqnum=cmd.seqnum,
+                                         devid=cmd.devid,
+                                         direction=cmd.direction,
+                                         ep=cmd.ep,
+                                         flags=cmd.transfer_flags,
+                                         numberOfPackets=cmd.number_of_packets,
+                                         interval=cmd.interval,
+                                         setup=cmd.setup,
+                                         transfer_buffer=transfer_buffer)
+                    self.usb_devices[0].connection = conn
+                    self.usb_devices[0].handle_usb_request(usb_req)
+            print('Close connection\n')
+            conn.close()
