@@ -49,11 +49,10 @@ class IPPOverUSBDevice(USBDevice):
             with open(config_file, 'r') as f:
                 return json.load(f)
         except FileNotFoundError:
-            # create default config if file doesn't exist
             default_config = {
                 "ipp_server_url": "http://localhost:631/ipp/print",
                 "device_name": "Virtual IPP Printer",
-                "vendor_id": "0x03F0",  # HP
+                "vendor_id": "0x03F0",
                 "product_id": "0x1234",
                 "manufacturer": "Virtual",
                 "product": "IPP-USB Proxy",
@@ -69,13 +68,13 @@ class IPPOverUSBDevice(USBDevice):
     
     def create_device_descriptor(self):
         return DeviceDescriptor(
-            bDeviceClass=0x07,      # printer class
-            bDeviceSubClass=0x01,   # printer subclass
-            bDeviceProtocol=0x02,   # bidirectional protocol
-            bMaxPacketSize0=0x40,   # 64 bytes
+            bDeviceClass=0x07,
+            bDeviceSubClass=0x01,
+            bDeviceProtocol=0x02,
+            bMaxPacketSize0=0x40,
             idVendor=self.vendor_id,
             idProduct=self.product_id,
-            bcdDevice=0x0100,       # device version 1.0
+            bcdDevice=0x0100,
             bNumConfigurations=1
         )
     
@@ -83,39 +82,37 @@ class IPPOverUSBDevice(USBDevice):
         interface_desc = InterfaceDescriptor(
             bInterfaceNumber=0,
             bAlternateSetting=0,
-            bNumEndpoints=2,        # bulk in and bulk out
-            bInterfaceClass=0x07,   # printer class
-            bInterfaceSubClass=0x01, # printer subclass
-            bInterfaceProtocol=0x02, # bidirectional protocol
+            bNumEndpoints=2,
+            bInterfaceClass=0x07,
+            bInterfaceSubClass=0x01,
+            bInterfaceProtocol=0x02,
             iInterface=0
         )
         
-        # bulk out endpoint (host to device)
         bulk_out_endpoint = EndpointDescriptor(
-            bEndpointAddress=0x01,  # out endpoint 1
-            bmAttributes=0x02,      # bulk transfer
-            wMaxPacketSize=0x0200,  # 512 bytes
-            bInterval=0x00          # ignored for bulk
+            bEndpointAddress=0x01,
+            bmAttributes=0x02,
+            wMaxPacketSize=0x0200,
+            bInterval=0x00
         )
         
-        # bulk in endpoint (device to host)
         bulk_in_endpoint = EndpointDescriptor(
-            bEndpointAddress=0x82,  # in endpoint 2
-            bmAttributes=0x02,      # bulk transfer
-            wMaxPacketSize=0x0200,  # 512 bytes
-            bInterval=0x00          # ignored for bulk
+            bEndpointAddress=0x82,
+            bmAttributes=0x02,
+            wMaxPacketSize=0x0200,
+            bInterval=0x00
         )
         
         interface_desc.endpoints = [bulk_out_endpoint, bulk_in_endpoint]
         interface = [interface_desc]
         
         config = DeviceConfiguration(
-            wTotalLength=0x0020,    # will be calculated
+            wTotalLength=0x0020,
             bNumInterfaces=1,
             bConfigurationValue=1,
             iConfiguration=0,
-            bmAttributes=0xC0,      # self-powered
-            bMaxPower=0x32          # 100mA
+            bmAttributes=0xC0,
+            bMaxPower=0x32
         )
         
         config.interfaces = [interface]
@@ -175,13 +172,13 @@ class IPPOverUSBDevice(USBDevice):
             self.tcp_connected = False
     
     def handle_data(self, usb_req):
-        if usb_req.ep == 0x01:  # bulk out - host to device
+        if usb_req.ep == 0x01:
             self.handle_bulk_out(usb_req)
-        elif usb_req.ep == 0x82:  # bulk in - device to host
+        elif usb_req.ep == 0x82:
             self.handle_bulk_in(usb_req)
         else:
             print(f"Unknown endpoint: {usb_req.ep:02x}")
-            self.send_usb_ret(usb_req, b'', 0, status=1)  # stall
+            self.send_usb_ret(usb_req, b'', 0, status=1)
     
     def handle_bulk_out(self, usb_req):
         try:
@@ -191,50 +188,45 @@ class IPPOverUSBDevice(USBDevice):
             
             print(f"Received {len(usb_req.transfer_buffer)} bytes from host")
             
-            # ensure we're connected to the server
             if not self.tcp_connected:
                 if not self.connect_to_server():
-                    self.send_usb_ret(usb_req, b'', 0, status=1)  # stall
+                    self.send_usb_ret(usb_req, b'', 0, status=1)
                     return
             
-            # forward data to ipp server
             try:
                 with self.connection_lock:
                     if self.tcp_connection and self.tcp_connected:
                         self.tcp_connection.send(usb_req.transfer_buffer)
                         print(f"Forwarded {len(usb_req.transfer_buffer)} bytes to IPP server")
                         
-                        # try to read response immediately
-                        self.tcp_connection.settimeout(0.1)  # short timeout
+                        self.tcp_connection.settimeout(0.1)
                         try:
                             response = self.tcp_connection.recv(8192)
                             if response:
                                 print(f"Received immediate response: {len(response)} bytes")
-                                # store response for bulk in requests
                                 if not hasattr(self, 'pending_response'):
                                     self.pending_response = bytearray()
                                 self.pending_response.extend(response)
                         except socket.timeout:
-                            pass  # no immediate response
+                            pass
                         finally:
-                            self.tcp_connection.settimeout(10.0)  # restore timeout
+                            self.tcp_connection.settimeout(10.0)
                         
                         self.send_usb_ret(usb_req, b'', len(usb_req.transfer_buffer))
                     else:
-                        self.send_usb_ret(usb_req, b'', 0, status=1)  # stall
+                        self.send_usb_ret(usb_req, b'', 0, status=1)
                         
             except Exception as e:
                 print(f"Error forwarding to IPP server: {e}")
                 self.disconnect_from_server()
-                self.send_usb_ret(usb_req, b'', 0, status=1)  # stall
+                self.send_usb_ret(usb_req, b'', 0, status=1)
                 
         except Exception as e:
             print(f"Error in bulk_out handler: {e}")
-            self.send_usb_ret(usb_req, b'', 0, status=1)  # stall
+            self.send_usb_ret(usb_req, b'', 0, status=1)
     
     def handle_bulk_in(self, usb_req):
         try:
-            # check if we have pending response data
             if hasattr(self, 'pending_response') and self.pending_response:
                 data_to_send = bytes(self.pending_response[:usb_req.transfer_buffer_length])
                 self.pending_response = self.pending_response[len(data_to_send):]
@@ -246,29 +238,25 @@ class IPPOverUSBDevice(USBDevice):
                 self.send_usb_ret(usb_req, data_to_send, len(data_to_send))
                 return
             
-            # try to read from ipp server
             if not self.tcp_connected:
-                # no data available
                 self.send_usb_ret(usb_req, b'', 0)
                 return
             
             try:
                 with self.connection_lock:
                     if self.tcp_connection and self.tcp_connected:
-                        self.tcp_connection.settimeout(0.1)  # short timeout
+                        self.tcp_connection.settimeout(0.1)
                         try:
                             response = self.tcp_connection.recv(usb_req.transfer_buffer_length)
                             if response:
                                 print(f"Received {len(response)} bytes from IPP server")
                                 self.send_usb_ret(usb_req, response, len(response))
                             else:
-                                # no data available
                                 self.send_usb_ret(usb_req, b'', 0)
                         except socket.timeout:
-                            # no data available
                             self.send_usb_ret(usb_req, b'', 0)
                         finally:
-                            self.tcp_connection.settimeout(10.0)  # restore timeout
+                            self.tcp_connection.settimeout(10.0)
                     else:
                         self.send_usb_ret(usb_req, b'', 0)
                         
@@ -279,40 +267,36 @@ class IPPOverUSBDevice(USBDevice):
                 
         except Exception as e:
             print(f"Error in bulk_in handler: {e}")
-            self.send_usb_ret(usb_req, b'', 0, status=1)  # stall
+            self.send_usb_ret(usb_req, b'', 0, status=1)
     
     def handle_device_specific_control(self, control_req, usb_req):
-        if control_req.bmRequestType == 0xA1:  # device to host, class, interface
-            if control_req.bRequest == 0x01:  # get_device_id
-                # return ieee 1284 device id string
+        if control_req.bmRequestType == 0xA1:
+            if control_req.bRequest == 0x01:
                 device_id = f'MFG:{self.config.get("manufacturer", "Virtual")};' \
                            f'CMD:PostScript,PDF;' \
                            f'MDL:{self.config.get("product", "IPP-USB Proxy")};' \
                            f'CLS:PRINTER;'
                 
                 device_id_bytes = device_id.encode('ascii')
-                # prepend length (big-endian 16-bit)
                 length_bytes = len(device_id_bytes).to_bytes(2, byteorder='big')
                 response = length_bytes + device_id_bytes
                 
                 self.send_usb_ret(usb_req, response, len(response))
                 return
             
-            elif control_req.bRequest == 0x02:  # get_port_status
-                # return port status (no error, selected, no paper empty)
-                status = 0x18  # selected, no error
+            elif control_req.bRequest == 0x02:
+                status = 0x18
                 self.send_usb_ret(usb_req, status.to_bytes(1, byteorder='little'), 1)
                 return
         
-        elif control_req.bmRequestType == 0x21:  # host to device, class, interface
-            if control_req.bRequest == 0x02:  # soft_reset
+        elif control_req.bmRequestType == 0x21:
+            if control_req.bRequest == 0x02:
                 print("Printer soft reset requested")
                 self.send_usb_ret(usb_req, b'', 0)
                 return
         
-        # if we get here, send stall
         print(f"Unhandled control request: {control_req.bmRequestType:02x} {control_req.bRequest:02x}")
-        self.send_usb_ret(usb_req, b'', 0, status=1)  # stall
+        self.send_usb_ret(usb_req, b'', 0, status=1)
 
 
 def main():
@@ -327,8 +311,6 @@ def main():
         listen_port = ipp_device.config.get('listen_port', 3240)
         
         print(f"Listening on {listen_ip}:{listen_port}")
-        print("To attach device, run:")
-        print(f"usbip attach -r {listen_ip} -b 1-1")
         print("Press Ctrl+C to stop")
         
         usb_container.run(ip=listen_ip, port=listen_port)
@@ -340,7 +322,6 @@ def main():
         import traceback
         traceback.print_exc()
     finally:
-        # clean up
         if 'ipp_device' in locals():
             ipp_device.disconnect_from_server()
 
