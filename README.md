@@ -45,7 +45,7 @@ python3 ipp_printer.py
 
 2. **In another terminal, attach the virtual device:**
 ```bash
-sudo usbip attach -r localhost -p 3240
+sudo usbip attach -r localhost -b 1-1
 ```
 
 3. **Verify the device is recognized:**
