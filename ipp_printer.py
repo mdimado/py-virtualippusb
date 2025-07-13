@@ -68,9 +68,9 @@ class IPPOverUSBDevice(USBDevice):
     
     def create_device_descriptor(self):
         return DeviceDescriptor(
-            bDeviceClass=0x07,
-            bDeviceSubClass=0x01,
-            bDeviceProtocol=0x02,
+            bDeviceClass=0x00,
+            bDeviceSubClass=0x00,
+            bDeviceProtocol=0x00,
             bMaxPacketSize0=0x40,
             idVendor=self.vendor_id,
             idProduct=self.product_id,
@@ -79,13 +79,13 @@ class IPPOverUSBDevice(USBDevice):
         )
     
     def create_configurations(self):
-        interface_desc = InterfaceDescriptor(
+        ipp_interface = InterfaceDescriptor(
             bInterfaceNumber=0,
             bAlternateSetting=0,
             bNumEndpoints=2,
             bInterfaceClass=0x07,
             bInterfaceSubClass=0x01,
-            bInterfaceProtocol=0x02,
+            bInterfaceProtocol=0x04,  # IPP-over-USB protocol
             iInterface=0
         )
         
@@ -103,19 +103,45 @@ class IPPOverUSBDevice(USBDevice):
             bInterval=0x00
         )
         
-        interface_desc.endpoints = [bulk_out_endpoint, bulk_in_endpoint]
-        interface = [interface_desc]
+        ipp_interface.endpoints = [bulk_out_endpoint, bulk_in_endpoint]
+        
+        # Second interface required for ipp-usb detection
+        ipp_interface2 = InterfaceDescriptor(
+            bInterfaceNumber=1,
+            bAlternateSetting=0,
+            bNumEndpoints=2,
+            bInterfaceClass=0x07,
+            bInterfaceSubClass=0x01,
+            bInterfaceProtocol=0x04,
+            iInterface=0
+        )
+        
+        bulk_out_endpoint2 = EndpointDescriptor(
+            bEndpointAddress=0x03,
+            bmAttributes=0x02,
+            wMaxPacketSize=0x0200,
+            bInterval=0x00
+        )
+        
+        bulk_in_endpoint2 = EndpointDescriptor(
+            bEndpointAddress=0x84,
+            bmAttributes=0x02,
+            wMaxPacketSize=0x0200,
+            bInterval=0x00
+        )
+        
+        ipp_interface2.endpoints = [bulk_out_endpoint2, bulk_in_endpoint2]
         
         config = DeviceConfiguration(
-            wTotalLength=0x0020,
-            bNumInterfaces=1,
+            wTotalLength=0x0039,
+            bNumInterfaces=2,
             bConfigurationValue=1,
             iConfiguration=0,
             bmAttributes=0xC0,
             bMaxPower=0x32
         )
         
-        config.interfaces = [interface]
+        config.interfaces = [[ipp_interface], [ipp_interface2]]
         return [config]
     
     @property
@@ -172,9 +198,9 @@ class IPPOverUSBDevice(USBDevice):
             self.tcp_connected = False
     
     def handle_data(self, usb_req):
-        if usb_req.ep == 0x01:
+        if usb_req.ep == 0x01 or usb_req.ep == 0x03:
             self.handle_bulk_out(usb_req)
-        elif usb_req.ep == 0x82:
+        elif usb_req.ep == 0x82 or usb_req.ep == 0x84:
             self.handle_bulk_in(usb_req)
         else:
             print(f"Unknown endpoint: {usb_req.ep:02x}")
@@ -271,7 +297,7 @@ class IPPOverUSBDevice(USBDevice):
     
     def handle_device_specific_control(self, control_req, usb_req):
         if control_req.bmRequestType == 0xA1:
-            if control_req.bRequest == 0x01:
+            if control_req.bRequest == 0x01:  # GET_DEVICE_ID
                 device_id = f'MFG:{self.config.get("manufacturer", "Virtual")};' \
                            f'CMD:PostScript,PDF;' \
                            f'MDL:{self.config.get("product", "IPP-USB Proxy")};' \
